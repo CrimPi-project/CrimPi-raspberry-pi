@@ -68,19 +68,20 @@ class BLETemperature:
             conn_handle, value_handle, status = data
 
     def update_temperature(self, notify=False, indicate=False):
-        # Write the local value, ready for a central to read.
-        temp_deg_c = random.uniform(1.0, 50.0)
-        self._sensor_temp = temp_deg_c # Corrected assignment to instance variable
-        print("write temp %.2f degc" % temp_deg_c);
-        self._ble.gatts_write(self._handle, struct.pack("<h", int(temp_deg_c * 100)))
-        if notify or indicate:
-            for conn_handle in self._connections:
-                if notify:
-                    # Notify connected centrals.
-                    self._ble.gatts_notify(conn_handle, self._handle)
-                if indicate:
-                    # Indicate connected centrals.
-                    self._ble.gatts_indicate(conn_handle, self._handle)
+        if self._connections:
+            # Write the local value, ready for a central to read.
+            temp_deg_c = random.uniform(20.0, 30.0)
+            self._sensor_temp = temp_deg_c # Corrected assignment to instance variable
+            print("write temp %.2f degc" % temp_deg_c);
+            self._ble.gatts_write(self._handle, struct.pack("<h", int(temp_deg_c * 100)))
+            if notify or indicate:
+                for conn_handle in self._connections:
+                    if notify:
+                        # Notify connected centrals.
+                        self._ble.gatts_notify(conn_handle, self._handle)
+                    if indicate:
+                        # Indicate connected centrals.
+                        self._ble.gatts_indicate(conn_handle, self._handle)
 
     def _advertise(self, interval_us=500000):
         self._ble.gap_advertise(interval_us, adv_data=self._payload)
@@ -96,7 +97,7 @@ def demo():
         temp.update_temperature(notify=True, indicate=False)
         led.toggle()
         time.sleep_ms(1000)
-        counter += 1
 
 if __name__ == "__main__":
     demo()
+

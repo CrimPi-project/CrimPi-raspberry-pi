@@ -11,22 +11,27 @@ from machine import Pin
 
 _IRQ_CENTRAL_CONNECT = const(1)
 _IRQ_CENTRAL_DISCONNECT = const(2)
+_IRQ_GATTS_WRITE = const(3)
 _IRQ_GATTS_INDICATE_DONE = const(20)
+
 
 _FLAG_READ = const(0x0002)
 _FLAG_NOTIFY = const(0x0010)
 _FLAG_INDICATE = const(0x0020)
 
-# org.bluetooth.service.environmental_sensing
-_ENV_SENSE_UUID = bluetooth.UUID(0x181A)
-# org.bluetooth.characteristic.temperature
-_TEMP_CHAR = (
-    bluetooth.UUID(0x2A6E),
-    _FLAG_READ | _FLAG_NOTIFY | _FLAG_INDICATE,
+_UART_SERVICE_UUID = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
+_UART_TX = (
+    bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"),
+    _FLAG_NOTIFY,
 )
-_ENV_SENSE_SERVICE = (
-    _ENV_SENSE_UUID,
-    (_TEMP_CHAR,),
+_UART_RX = (
+    bluetooth.UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"),
+    bluetooth.FLAG_WRITE,
+)
+
+_UART_SERVICE = (
+    _UART_SERVICE_UUID,
+    (_UART_TX, _UART_RX),
 )
 
 # org.bluetooth.characteristic.gap.appearance.xml
@@ -36,15 +41,16 @@ class BLETemperature:
     def __init__(self, ble, name=""):
         self._ble = ble
         self.connected = False
+        self._sending = False
         self._ble.active(True)
         self._ble.irq(self._irq)
-        ((self._handle,),) = self._ble.gatts_register_services((_ENV_SENSE_SERVICE,))
+        ((self._tx_handle, self._rx_handle),) = self._ble.gatts_register_services((_UART_SERVICE,))
         self._connections = set()
         if len(name) == 0:
             name = 'Pico %s' % ubinascii.hexlify(self._ble.config('mac')[1],':').decode().upper()
         print('Sensor name %s' % name)
         self._payload = advertising_payload(
-            name=name, services=[_ENV_SENSE_UUID]
+            name=name, services=[_UART_SERVICE_UUID]
         )
         self._advertise()
 
@@ -58,7 +64,15 @@ class BLETemperature:
             print(f"New connection from Central: {conn_handle}, Phone Address: {phone_address_str}")
             # Send the current temperature immediately upon connection
             self.connected = True
-            self.update_temperature(notify=True) # Added: Send temperature immediately on connect
+        elif event == _IRQ_GATTS_WRITE:
+            conn_handle, attr_handle = data
+            if attr_handle == self._rx_handle:
+                cmd = self._ble.gatts_read(self._rx_handle).decode().strip().lower()
+                print("Received command:", cmd)
+                if cmd == "start":
+                    self._sending = True
+                elif cmd == "stop":
+                    self._sending = False
         elif event == _IRQ_CENTRAL_DISCONNECT:
             conn_handle, _, _ = data
             self._connections.remove(conn_handle)
@@ -73,15 +87,15 @@ class BLETemperature:
             temp_deg_c = random.uniform(20.0, 30.0)
             self._sensor_temp = temp_deg_c # Corrected assignment to instance variable
             print("write temp %.2f degc" % temp_deg_c);
-            self._ble.gatts_write(self._handle, struct.pack("<h", int(temp_deg_c * 100)))
+            self._ble.gatts_write(self._tx_handle, struct.pack("<h", int(temp_deg_c * 100)))
             if notify or indicate:
                 for conn_handle in self._connections:
                     if notify:
                         # Notify connected centrals.
-                        self._ble.gatts_notify(conn_handle, self._handle)
+                        self._ble.gatts_notify(conn_handle,self._tx_handle)
                     if indicate:
                         # Indicate connected centrals.
-                        self._ble.gatts_indicate(conn_handle, self._handle)
+                        self._ble.gatts_indicate(conn_handle,self._tx_handle)
 
     def _advertise(self, interval_us=500000):
         self._ble.gap_advertise(interval_us, adv_data=self._payload)
@@ -94,9 +108,12 @@ def demo():
     counter = 0
     led = Pin('LED', Pin.OUT)
     while True:
-        temp.update_temperature(notify=True, indicate=False)
-        led.toggle()
-        time.sleep_ms(1000)
+        if temp._sending:
+            temp.update_temperature(notify=True, indicate=False)
+            led.toggle()
+        #else:
+            #print('Waiting for command')
+        time.sleep_ms(200)
 
 if __name__ == "__main__":
     demo()

@@ -8,6 +8,13 @@ import ubinascii
 from ble_advertising import advertising_payload
 from micropython import const
 from machine import Pin
+from hx711 import HX711
+
+DT = Pin(15, Pin.IN, pull=Pin.PULL_DOWN)  
+SCK = Pin(16, Pin.OUT)
+HX = HX711(SCK,DT)
+OFFSET = -1
+KG = 43679.05
 
 _IRQ_CENTRAL_CONNECT = const(1)
 _IRQ_CENTRAL_DISCONNECT = const(2)
@@ -42,12 +49,14 @@ class BLETemperature:
         self._ble = ble
         self.connected = False
         self._sending = False
+        self.tare = False
+        self.already_tared_in_workout = False
         self._ble.active(True)
         self._ble.irq(self._irq)
         ((self._tx_handle, self._rx_handle),) = self._ble.gatts_register_services((_UART_SERVICE,))
         self._connections = set()
         if len(name) == 0:
-            name = 'Pico %s' % ubinascii.hexlify(self._ble.config('mac')[1],':').decode().upper()
+            name = 'Pico W'
         print('Sensor name %s' % name)
         self._payload = advertising_payload(
             name=name, services=[_UART_SERVICE_UUID]
@@ -70,6 +79,8 @@ class BLETemperature:
                 cmd = self._ble.gatts_read(self._rx_handle).decode().strip().lower()
                 print("Received command:", cmd)
                 if cmd == "start":
+                    if not self.already_tared_in_workout:
+                        self.tare = True
                     self._sending = True
                 elif cmd == "stop":
                     self._sending = False
@@ -84,10 +95,10 @@ class BLETemperature:
     def update_temperature(self, notify=False, indicate=False):
         if self._connections:
             # Write the local value, ready for a central to read.
-            temp_deg_c = random.uniform(20.0, 30.0)
-            self._sensor_temp = temp_deg_c # Corrected assignment to instance variable
-            print("write temp %.2f degc" % temp_deg_c);
-            self._ble.gatts_write(self._tx_handle, struct.pack("<h", int(temp_deg_c * 100)))
+            weight = (HX.read()-OFFSET) / KG
+            self._sensor_temp = weight # Corrected assignment to instance variable
+            print("Weight: %.2f Kg" % weight);
+            self._ble.gatts_write(self._tx_handle, struct.pack("<h", int(weight * 100)))
             if notify or indicate:
                 for conn_handle in self._connections:
                     if notify:
@@ -100,14 +111,19 @@ class BLETemperature:
     def _advertise(self, interval_us=500000):
         self._ble.gap_advertise(interval_us, adv_data=self._payload)
 
-    # ref https://github.com/raspberrypi/pico-micropython-examples/blob/master/adc/temperature.py
-
 def demo():
     ble = bluetooth.BLE()
     temp = BLETemperature(ble)
     counter = 0
     led = Pin('LED', Pin.OUT)
     while True:
+        if temp.tare:
+            global OFFSET
+            HX.tare()
+            OFFSET = HX.read()
+            temp.tare = False
+            temp.already_tared_in_workout = True
+            print('Tared:')
         if temp._sending:
             temp.update_temperature(notify=True, indicate=False)
             led.toggle()
